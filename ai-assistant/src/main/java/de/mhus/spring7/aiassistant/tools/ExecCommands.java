@@ -11,16 +11,18 @@ import org.springframework.stereotype.Component;
 public class ExecCommands {
 
     private final ExecManager exec;
+    private final ExecuteTool executeTool;
 
-    public ExecCommands(ExecManager exec) {
+    public ExecCommands(ExecManager exec, ExecuteTool executeTool) {
         this.exec = exec;
+        this.executeTool = executeTool;
     }
 
     @Command(name = "exec", group = "Exec", description = "Run a shell command. Waits up to 15s, then returns the task id so you can check back.")
     public String execCommand(@Argument(index = 0, description = "Shell command.") String command) {
         String id = exec.submit(command);
         ExecJob job = exec.waitFor(id, ExecuteTool.DEFAULT_WAIT_MS);
-        return ExecuteTool.renderJob(job);
+        return executeTool.renderJob(job);
     }
 
     @Command(name = "exec-list", group = "Exec", description = "List all exec tasks (running and finished).")
@@ -43,7 +45,7 @@ public class ExecCommands {
     public String execOutput(@Argument(index = 0, description = "Task id (from exec-list).") String taskId) {
         ExecJob j = exec.get(taskId);
         if (j == null) return "task not found: " + taskId;
-        return ExecuteTool.renderJob(j);
+        return executeTool.renderJob(j);
     }
 
     @Command(name = "exec-kill", group = "Exec", description = "Kill a running task.")
@@ -61,7 +63,7 @@ public class ExecCommands {
         catch (NumberFormatException e) { return "invalid milliseconds: " + maxMillis; }
         ExecJob j = exec.waitFor(taskId, n);
         if (j == null) return "task not found: " + taskId;
-        return ExecuteTool.renderJob(j);
+        return executeTool.renderJob(j);
     }
 
     private static String preview(String s) {

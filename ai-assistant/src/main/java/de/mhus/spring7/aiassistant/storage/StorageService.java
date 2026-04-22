@@ -213,6 +213,75 @@ public class StorageService {
         @Override public void close() { /* caller closes originals */ }
     }
 
+    // ---- exec ----
+
+    public Path execJobDir(String id) {
+        Path d = sessionDir().resolve("exec").resolve(id);
+        try {
+            Files.createDirectories(d);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return d;
+    }
+
+    public void saveExecJobMeta(ExecJobDto dto) {
+        writeJson(execJobDir(dto.id()).resolve("job.json"), dto);
+    }
+
+    public java.io.BufferedWriter openExecStdout(String id) throws IOException {
+        return Files.newBufferedWriter(execJobDir(id).resolve("stdout.log"),
+                StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    public java.io.BufferedWriter openExecStderr(String id) throws IOException {
+        return Files.newBufferedWriter(execJobDir(id).resolve("stderr.log"),
+                StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    public String readExecStdout(String id) {
+        return readOptional(execJobDir(id).resolve("stdout.log"));
+    }
+
+    public String readExecStderr(String id) {
+        return readOptional(execJobDir(id).resolve("stderr.log"));
+    }
+
+    public List<ExecJobDto> loadExecJobMetas() {
+        Path d = sessionDir().resolve("exec");
+        if (!Files.isDirectory(d)) return List.of();
+        try (Stream<Path> s = Files.list(d)) {
+            return s.filter(Files::isDirectory)
+                    .map(jobDir -> jobDir.resolve("job.json"))
+                    .filter(Files::isRegularFile)
+                    .map(this::readExecJob)
+                    .filter(j -> j != null)
+                    .sorted(Comparator.comparing(ExecJobDto::startedAt, Comparator.nullsLast(Comparator.naturalOrder())))
+                    .toList();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private ExecJobDto readExecJob(Path p) {
+        try {
+            return json.readValue(Files.readString(p), ExecJobDto.class);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private String readOptional(Path p) {
+        if (!Files.isRegularFile(p)) return "";
+        try {
+            return Files.readString(p, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
     // ---- rag ----
 
     public void persistRag(VectorStore vs, List<Document> assistantDocs, List<Document> planDocs) {

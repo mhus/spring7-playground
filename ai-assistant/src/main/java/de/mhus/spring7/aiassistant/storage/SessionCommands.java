@@ -10,6 +10,7 @@ import de.mhus.spring7.aiassistant.AssistantCommands;
 import de.mhus.spring7.aiassistant.RagCommands;
 import de.mhus.spring7.aiassistant.plan.AssistantPlanCommands;
 import de.mhus.spring7.aiassistant.plan.SharedRagStore;
+import de.mhus.spring7.aiassistant.tools.ExecManager;
 
 @Component
 public class SessionCommands {
@@ -19,25 +20,28 @@ public class SessionCommands {
     private final AssistantPlanCommands planCommands;
     private final RagCommands ragCommands;
     private final SharedRagStore sharedRagStore;
+    private final ExecManager execManager;
 
     public SessionCommands(StorageService storage,
                            AssistantCommands assistantCommands,
                            AssistantPlanCommands planCommands,
                            RagCommands ragCommands,
-                           SharedRagStore sharedRagStore) {
+                           SharedRagStore sharedRagStore,
+                           ExecManager execManager) {
         this.storage = storage;
         this.assistantCommands = assistantCommands;
         this.planCommands = planCommands;
         this.ragCommands = ragCommands;
         this.sharedRagStore = sharedRagStore;
+        this.execManager = execManager;
     }
 
     private void reloadAll() {
         assistantCommands.reloadFromStorage();
         planCommands.reloadFromStorage();
-        // RAG: vectors.json is shared — load once via one side, then populate trackers
         ragCommands.reloadFromStorage();
         sharedRagStore.reloadFromStorage();
+        execManager.reloadFromStorage();
     }
 
     @Command(name = "session", group = "Session", description = "Show the current session id and stats.")

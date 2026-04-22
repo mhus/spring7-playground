@@ -1,6 +1,7 @@
 package de.mhus.spring7.aiassistant.tools;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -17,12 +18,16 @@ import jakarta.annotation.PreDestroy;
 
 import org.springframework.stereotype.Service;
 
+import de.mhus.spring7.aiassistant.storage.ExecJobDto;
+import de.mhus.spring7.aiassistant.storage.StorageService;
+
 /**
- * Runs shell commands in background threads. Each submission gets a short id; the command is
- * launched immediately and the job object tracks status + captured output. Callers can wait
- * with a timeout, query the state later, or kill the process.
- *
- * Uses {@code /bin/sh -c} on Unix-like systems and {@code cmd.exe /c} on Windows.
+ * Runs shell commands in background threads with live output persistence.
+ * <p>
+ * Per job: {@code exec/<id>/job.json} (metadata, updated on state changes) and
+ * {@code stdout.log} / {@code stderr.log} (streamed line-by-line with flush).
+ * Surviving JVM crashes means partial output is preserved — RUNNING jobs found on disk are
+ * marked FAILED when reloaded since their process is gone.
  */
 @Service
 public class ExecManager {
@@ -33,6 +38,11 @@ public class ExecManager {
         t.setDaemon(true);
         return t;
     });
+    private final StorageService storage;
+
+    public ExecManager(StorageService storage) {
+        this.storage = storage;
+    }
 
     public String submit(String command) {
         String id = UUID.randomUUID().toString().substring(0, 8);
@@ -69,7 +79,30 @@ public class ExecManager {
         p.destroyForcibly();
         j.setStatus(ExecJob.Status.KILLED);
         j.setFinishedAt(Instant.now());
+        saveMeta(j);
         return true;
+    }
+
+    public void reloadFromStorage() {
+        jobs.clear();
+        for (ExecJobDto dto : storage.loadExecJobMetas()) {
+            ExecJob job = new ExecJob(dto.id(), dto.command());
+            if (dto.finishedAt() != null) {
+                job.setFinishedAt(Instant.parse(dto.finishedAt()));
+            }
+            ExecJob.Status status;
+            try { status = ExecJob.Status.valueOf(dto.status()); }
+            catch (IllegalArgumentException e) { status = ExecJob.Status.FAILED; }
+            // running on disk = orphaned (process is gone)
+            if (status == ExecJob.Status.RUNNING) status = ExecJob.Status.FAILED;
+            job.setStatus(status);
+            job.setExitCode(dto.exitCode());
+            String out = storage.readExecStdout(job.id());
+            String err = storage.readExecStderr(job.id());
+            for (String line : out.split("\n", -1)) if (!line.isEmpty()) job.appendStdout(line);
+            for (String line : err.split("\n", -1)) if (!line.isEmpty()) job.appendStderr(line);
+            jobs.put(job.id(), job);
+        }
     }
 
     @PreDestroy
@@ -83,7 +116,10 @@ public class ExecManager {
     }
 
     private void runJob(ExecJob job) {
-        try {
+        saveMeta(job); // initial: RUNNING
+        try (BufferedWriter stdoutW = storage.openExecStdout(job.id());
+             BufferedWriter stderrW = storage.openExecStderr(job.id())) {
+
             ProcessBuilder pb = isWindows()
                     ? new ProcessBuilder("cmd.exe", "/c", job.command())
                     : new ProcessBuilder("/bin/sh", "-c", job.command());
@@ -91,8 +127,14 @@ public class ExecManager {
             Process p = pb.start();
             job.setProcess(p);
 
-            Thread out = pump(p.getInputStream(), line -> job.appendStdout(line));
-            Thread err = pump(p.getErrorStream(), line -> job.appendStderr(line));
+            Thread out = pump(p.getInputStream(), line -> {
+                job.appendStdout(line);
+                writeLine(stdoutW, line);
+            });
+            Thread err = pump(p.getErrorStream(), line -> {
+                job.appendStderr(line);
+                writeLine(stderrW, line);
+            });
             out.start(); err.start();
 
             int code = p.waitFor();
@@ -101,10 +143,12 @@ public class ExecManager {
             job.setExitCode(code);
             job.setStatus(code == 0 ? ExecJob.Status.COMPLETED : ExecJob.Status.FAILED);
         } catch (Exception e) {
-            job.appendStderr("ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+            job.appendStderr(msg);
             job.setStatus(ExecJob.Status.FAILED);
         } finally {
             job.setFinishedAt(Instant.now());
+            saveMeta(job);
         }
     }
 
@@ -119,6 +163,27 @@ public class ExecManager {
         });
         t.setDaemon(true);
         return t;
+    }
+
+    private static void writeLine(BufferedWriter w, String line) {
+        synchronized (w) {
+            try {
+                w.write(line);
+                w.newLine();
+                w.flush();
+            } catch (IOException ignored) {}
+        }
+    }
+
+    private void saveMeta(ExecJob j) {
+        storage.saveExecJobMeta(new ExecJobDto(
+                j.id(),
+                j.command(),
+                j.startedAt().toString(),
+                j.finishedAt() != null ? j.finishedAt().toString() : null,
+                j.status().name(),
+                j.exitCode()
+        ));
     }
 
     private static boolean isWindows() {
