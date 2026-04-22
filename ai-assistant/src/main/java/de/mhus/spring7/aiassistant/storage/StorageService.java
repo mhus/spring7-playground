@@ -389,6 +389,21 @@ public class StorageService {
         return d;
     }
 
+    /**
+     * Project-wide, session-independent storage area. Kept under {@code data/project/} at the
+     * working directory root. Intended for long-lived notes, references, design docs, config,
+     * etc. that the agent should recognize across sessions.
+     */
+    public Path projectDir() {
+        Path d = Path.of("data", "project");
+        try {
+            Files.createDirectories(d);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return d;
+    }
+
     public List<String> listRuns() {
         Path d = sessionDir().resolve("runs");
         if (!Files.isDirectory(d)) return List.of();

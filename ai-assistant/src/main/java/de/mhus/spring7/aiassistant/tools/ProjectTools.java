@@ -8,37 +8,38 @@ import java.nio.file.StandardOpenOption;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptException;
-
-import org.mozilla.javascript.engine.RhinoScriptEngineFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
+import de.mhus.spring7.aiassistant.plan.SharedRagStore;
 import de.mhus.spring7.aiassistant.storage.StorageService;
 
 /**
- * Session-scoped filesystem sandbox at {@code data/sessions/<uuid>/workspace/}. The agent can
- * create, edit and run files here without affecting the rest of the filesystem. All operations
- * take relative paths and are confined to the workspace (no breakout via .. or absolute paths).
- * Workspace persists across restarts and follows the session — resume loads it back.
+ * Project-wide, session-independent storage. Persisted under {@code data/project/} at the
+ * working directory root. Survives session switches — use this for stable knowledge about
+ * the project: design notes, domain facts, configuration hints, references.
+ *
+ * The RAG store itself is session-scoped, so {@code ingestProjectFile} writes into the active
+ * session's RAG. On a new session, re-ingest if you need the content queryable again.
  */
 @Component
-public class WorkspaceTools implements AgentTool {
+public class ProjectTools implements AgentTool {
 
     private final StorageService storage;
+    private final SharedRagStore rag;
 
-    public WorkspaceTools(StorageService storage) {
+    public ProjectTools(StorageService storage, SharedRagStore rag) {
         this.storage = storage;
+        this.rag = rag;
     }
 
     @Tool(description = """
-            Create or overwrite a file in the session workspace. Use relative paths like
-            'tool.js' or 'utils/math.js'. Parent directories are created automatically.
+            Create or overwrite a project-wide file. Relative paths like 'notes/api.md' or
+            'decisions/2026-naming.txt'. Content survives across sessions. Parent dirs auto-created.
             """)
-    public String writeSessionFile(
-            @ToolParam(description = "Relative path inside the workspace.") String relativePath,
+    public String writeProjectFile(
+            @ToolParam(description = "Relative path inside data/project/.") String relativePath,
             @ToolParam(description = "Full file content.") String content) {
         Path p;
         try { p = resolve(relativePath); }
@@ -47,15 +48,15 @@ public class WorkspaceTools implements AgentTool {
             if (p.getParent() != null) Files.createDirectories(p.getParent());
             Files.writeString(p, content == null ? "" : content, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            return "OK wrote " + relativePath + " (" + (content == null ? 0 : content.length()) + " chars)";
+            return "OK wrote " + relativePath + " at " + p.toAbsolutePath();
         } catch (IOException e) {
             return "ERROR: " + e.getMessage();
         }
     }
 
-    @Tool(description = "Read a file from the session workspace.")
-    public String readSessionFile(
-            @ToolParam(description = "Relative path inside the workspace.") String relativePath) {
+    @Tool(description = "Read a project-wide file.")
+    public String readProjectFile(
+            @ToolParam(description = "Relative path inside data/project/.") String relativePath) {
         try {
             Path p = resolve(relativePath);
             if (!Files.isRegularFile(p)) return "ERROR: not a file: " + relativePath;
@@ -65,9 +66,9 @@ public class WorkspaceTools implements AgentTool {
         }
     }
 
-    @Tool(description = "Replace one occurrence of oldText with newText inside a workspace file. Same rules as editFile.")
-    public String editSessionFile(
-            @ToolParam(description = "Relative path inside the workspace.") String relativePath,
+    @Tool(description = "Replace one occurrence of oldText with newText inside a project file. Same rules as editFile.")
+    public String editProjectFile(
+            @ToolParam(description = "Relative path.") String relativePath,
             @ToolParam(description = "Exact text to find.") String oldText,
             @ToolParam(description = "Replacement.") String newText) {
         try {
@@ -88,9 +89,9 @@ public class WorkspaceTools implements AgentTool {
         }
     }
 
-    @Tool(description = "Delete a workspace file.")
-    public String deleteSessionFile(
-            @ToolParam(description = "Relative path inside the workspace.") String relativePath) {
+    @Tool(description = "Delete a project-wide file.")
+    public String deleteProjectFile(
+            @ToolParam(description = "Relative path.") String relativePath) {
         try {
             Path p = resolve(relativePath);
             boolean ok = Files.deleteIfExists(p);
@@ -100,17 +101,9 @@ public class WorkspaceTools implements AgentTool {
         }
     }
 
-    @Tool(description = """
-            Absolute filesystem path of the session workspace directory. Use this to scope
-            shell-based searches or hand the path to other tools.
-            """)
-    public String getSessionWorkspacePath() {
-        return storage.workspaceDir().toAbsolutePath().toString();
-    }
-
-    @Tool(description = "List all files currently in the session workspace (recursive). Returns relative paths, one per line.")
-    public String listSessionFiles() {
-        Path root = storage.workspaceDir();
+    @Tool(description = "List all project-wide files (recursive). Returns relative paths, one per line.")
+    public String listProjectFiles() {
+        Path root = storage.projectDir();
         try (Stream<Path> s = Files.walk(root)) {
             return s.filter(Files::isRegularFile)
                     .map(root::relativize)
@@ -123,23 +116,27 @@ public class WorkspaceTools implements AgentTool {
     }
 
     @Tool(description = """
-            Read a JavaScript file from the workspace and execute it via Mozilla Rhino.
-            Returns the value of the last expression as a string. Use this to iteratively
-            develop and test scripts that you previously wrote with writeSessionFile.
+            Absolute filesystem path of the project-wide data directory. Use this to scope
+            shell-based searches: e.g. executeCommand("grep -rn PATTERN <projectPath>").
             """)
-    public String executeSessionJavaScript(
-            @ToolParam(description = "Relative path to a .js file inside the workspace.") String relativePath) {
+    public String getProjectPath() {
+        return storage.projectDir().toAbsolutePath().toString();
+    }
+
+    @Tool(description = """
+            Ingest a project file into the current session's RAG vector store. The file is
+            chunked by token splitter and embedded. Later `say` or `ask` queries will retrieve
+            relevant chunks. Note: the RAG is session-scoped — on session switch, re-ingest
+            if needed.
+            """)
+    public String ingestProjectFile(
+            @ToolParam(description = "Relative path inside data/project/.") String relativePath) {
         try {
             Path p = resolve(relativePath);
             if (!Files.isRegularFile(p)) return "ERROR: not a file: " + relativePath;
-            String code = Files.readString(p, StandardCharsets.UTF_8);
-            ScriptEngine engine = new RhinoScriptEngineFactory().getScriptEngine();
-            try {
-                Object result = engine.eval(code);
-                return String.valueOf(result);
-            } catch (ScriptException e) {
-                return "ERROR: " + e.getMessage();
-            }
+            String content = Files.readString(p, StandardCharsets.UTF_8);
+            int n = rag.add(content, "project:" + relativePath);
+            return "OK ingested " + n + " chunks from " + relativePath + " (RAG total: " + rag.size() + ")";
         } catch (Exception e) {
             return "ERROR: " + e.getMessage();
         }
@@ -149,7 +146,7 @@ public class WorkspaceTools implements AgentTool {
         if (relativePath == null || relativePath.isBlank()) {
             throw new IllegalArgumentException("empty path");
         }
-        Path root = storage.workspaceDir().toAbsolutePath().normalize();
+        Path root = storage.projectDir().toAbsolutePath().normalize();
         Path resolved = root.resolve(relativePath).normalize();
         if (!resolved.startsWith(root)) {
             throw new IllegalArgumentException("path escape not allowed: " + relativePath);

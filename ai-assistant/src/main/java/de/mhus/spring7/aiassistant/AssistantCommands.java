@@ -84,7 +84,15 @@ public class AssistantCommands {
                 "editSessionFile(rel, oldText, newText)     - edit in session workspace",
                 "deleteSessionFile(rel)                     - delete in session workspace",
                 "listSessionFiles()                         - list session workspace",
+                "getSessionWorkspacePath()                  - absolute path of session workspace",
                 "executeSessionJavaScript(rel)              - run a JS file from the workspace",
+                "writeProjectFile(rel, content)             - create/overwrite in project scope",
+                "readProjectFile(rel)                       - read from project scope",
+                "editProjectFile(rel, oldText, newText)     - edit in project scope",
+                "deleteProjectFile(rel)                     - delete in project scope",
+                "listProjectFiles()                         - list project scope",
+                "getProjectPath()                           - absolute path of project scope",
+                "ingestProjectFile(rel)                     - load a project file into session RAG",
                 "orchestrate(problem)                       - multi-agent pipeline for a structured task",
                 "subtask(task, context?, persona?)          - fresh sub-LLM with same tools, no memory"
         ));
