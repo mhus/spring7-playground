@@ -10,14 +10,18 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>shell-cli</artifactId>
-    <name>shell-cli</name>
-    <description>Spring Shell CLI example module</description>
+    <artifactId>ai-agent</artifactId>
+    <name>ai-agent</name>
+    <description>Spring AI agent with shell chat, memory, and tools</description>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-google-genai</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.shell</groupId>

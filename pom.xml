@@ -24,6 +24,9 @@
         <module>shell-cli</module>
         <module>modulith-demo</module>
         <module>ai-gemini</module>
+        <module>ai-agent</module>
+        <module>ai-rag</module>
+        <module>ai-assistant</module>
     </modules>
 
     <properties>
