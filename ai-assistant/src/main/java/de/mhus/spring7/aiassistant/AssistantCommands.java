@@ -93,6 +93,10 @@ public class AssistantCommands {
                 "listProjectFiles()                         - list project scope",
                 "getProjectPath()                           - absolute path of project scope",
                 "ingestProjectFile(rel)                     - load a project file into session RAG",
+                "findTools(query)                           - search external tool registry",
+                "describeTool(name)                         - get params schema of an external tool",
+                "invokeTool(name, jsonArgs)                 - call an external tool",
+                "reloadTools()                              - re-read data/project/tools/",
                 "orchestrate(problem)                       - multi-agent pipeline for a structured task",
                 "subtask(task, context?, persona?)          - fresh sub-LLM with same tools, no memory"
         ));
