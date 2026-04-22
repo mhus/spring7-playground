@@ -3,12 +3,16 @@ package de.mhus.spring7.aiplan;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 @Component
 public class PipelineExecutor {
+
+    private static final int RAG_TOP_K = 4;
 
     private static final String ITEM_PRODUCER_HINT = """
 
@@ -17,9 +21,11 @@ public class PipelineExecutor {
             """;
 
     private final ChatClient executor;
+    private final SharedRagStore rag;
 
-    public PipelineExecutor(ChatClient.Builder builder) {
+    public PipelineExecutor(ChatClient.Builder builder, SharedRagStore rag) {
         this.executor = builder.build();
+        this.rag = rag;
     }
 
     public Object execute(Plan plan, ExecutionContext ctx) {
@@ -29,8 +35,8 @@ public class PipelineExecutor {
         int i = 1;
         for (PipelineStep step : plan.steps()) {
             IO.println("");
-            IO.println("─── step " + i + "/" + total + ": " + step.name() + " (" + step.type() + ") ───");
-            output = executeStep(step, input, ctx);
+            IO.println("─── step " + i + "/" + total + ": " + step.name() + " (" + step.type() + flags(step) + ") ───");
+            output = executeStep(step, input);
             ctx.put(step.name(), output);
             input = output;
             i++;
@@ -38,26 +44,39 @@ public class PipelineExecutor {
         return output;
     }
 
-    private Object executeStep(PipelineStep step, Object input, ExecutionContext ctx) {
-        if (step.isAgent()) {
-            return runAgent(step, toText(input));
-        }
+    private Object executeStep(PipelineStep step, Object input) {
         if (step.isForEach()) {
             return runForEach(step, toText(input));
         }
-        throw new IllegalArgumentException("unknown step type: " + step.type());
+        if (step.isAgent()) {
+            return runAgent(step, toText(input));
+        }
+        // Planner sometimes invents types like "research" or "summarize" — treat them as agents.
+        if (step.systemPrompt() != null && !step.systemPrompt().isBlank()) {
+            IO.println("  [unknown type '" + step.type() + "' — running as agent]");
+            return runAgent(step, toText(input));
+        }
+        throw new IllegalArgumentException("unknown step type '" + step.type() + "' and no systemPrompt");
     }
 
     private String runAgent(PipelineStep step, String input) {
+        String userInput = step.shouldUseRag() ? augmentWithRag(input) : input;
         long t0 = System.currentTimeMillis();
         String output = executor.prompt()
                 .system(step.systemPrompt())
-                .user(input)
+                .user(userInput)
                 .call()
                 .content();
         long ms = System.currentTimeMillis() - t0;
         IO.println("[" + step.name() + " done in " + ms + " ms]");
         IO.println(output);
+        if (step.shouldStoreInRag()) {
+            int n = rag.addLines(output, step.name());
+            if (n == 0) {
+                n = rag.add(output, step.name());
+            }
+            IO.println("  [stored " + n + " chunks in RAG from " + step.name() + "]");
+        }
         return output;
     }
 
@@ -65,11 +84,12 @@ public class PipelineExecutor {
         PipelineStep producer = requireInner(step.producer(), step.name(), "producer");
         PipelineStep itemAgent = requireInner(step.itemAgent(), step.name(), "itemAgent");
 
-        IO.println("  ▸ producer: " + producer.name());
+        IO.println("  ▸ producer: " + producer.name() + flags(producer));
+        String producerInput = producer.shouldUseRag() ? augmentWithRag(input) : input;
         String producerSystem = producer.systemPrompt() + ITEM_PRODUCER_HINT;
         String producerOut = executor.prompt()
                 .system(producerSystem)
-                .user(input)
+                .user(producerInput)
                 .call()
                 .content();
         List<String> items = Arrays.stream(producerOut.split("\\R"))
@@ -77,30 +97,58 @@ public class PipelineExecutor {
                 .filter(s -> !s.isEmpty())
                 .toList();
         IO.println("  [producer yielded " + items.size() + " items]");
+        if (producer.shouldStoreInRag()) {
+            int n = rag.addLines(producerOut, producer.name());
+            IO.println("  [stored " + n + " chunks in RAG from " + producer.name() + "]");
+        }
 
         List<String> itemOutputs = new ArrayList<>();
         int k = 1;
         for (String item : items) {
-            IO.println("  ▸ item " + k + "/" + items.size() + ": " + preview(item));
+            IO.println("  ▸ item " + k + "/" + items.size() + flags(itemAgent) + ": " + preview(item));
+            String itemInput = itemAgent.shouldUseRag() ? augmentWithRag(item) : item;
             long t0 = System.currentTimeMillis();
             String out = executor.prompt()
                     .system(itemAgent.systemPrompt())
-                    .user(item)
+                    .user(itemInput)
                     .call()
                     .content();
             long ms = System.currentTimeMillis() - t0;
             IO.println("  [" + itemAgent.name() + " #" + k + " done in " + ms + " ms]");
             IO.println(out);
+            if (itemAgent.shouldStoreInRag()) {
+                int n = rag.add(out, itemAgent.name() + "#" + k);
+                IO.println("  [stored " + n + " chunks in RAG from " + itemAgent.name() + " #" + k + "]");
+            }
             itemOutputs.add(out);
             k++;
         }
 
         if (step.collector() != null) {
-            IO.println("  ▸ collector: " + step.collector().name());
+            IO.println("  ▸ collector: " + step.collector().name() + flags(step.collector()));
             String merged = String.join("\n\n---\n\n", itemOutputs);
             return List.of(runAgent(step.collector(), merged));
         }
         return itemOutputs;
+    }
+
+    private String augmentWithRag(String input) {
+        List<Document> hits = rag.query(input, RAG_TOP_K);
+        if (hits.isEmpty()) {
+            return input;
+        }
+        String context = hits.stream()
+                .map(d -> "- " + d.getText())
+                .collect(Collectors.joining("\n"));
+        IO.println("  [RAG matched " + hits.size() + " chunks]");
+        return "Context from knowledge store:\n" + context + "\n\nUser input:\n" + input;
+    }
+
+    private static String flags(PipelineStep step) {
+        StringBuilder sb = new StringBuilder();
+        if (step.shouldUseRag()) sb.append(" +useRag");
+        if (step.shouldStoreInRag()) sb.append(" +storeInRag");
+        return sb.toString();
     }
 
     private static PipelineStep requireInner(PipelineStep inner, String parent, String role) {

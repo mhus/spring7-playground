@@ -11,8 +11,13 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  *   <li>{@code type="forEach"}: {@code producer} yields a list, {@code itemAgent} runs per item,
  *       {@code collector} optionally merges the item outputs.</li>
  * </ul>
- * Placeholders (unused for now, populated in later steps): {@code dependsOn} (DAG),
- * {@code outputSchema} (structured flows), {@code storeInRag} (RAG shared memory).
+ * Per-agent RAG flags:
+ * <ul>
+ *   <li>{@code storeInRag=true}: after the call, write the agent's output into the shared vector store.</li>
+ *   <li>{@code useRag=true}: before the call, retrieve top-K chunks from the shared vector store and
+ *       inject them as context into the user prompt.</li>
+ * </ul>
+ * Placeholders (unused for now): {@code dependsOn} (DAG), {@code outputSchema} (structured flows).
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PipelineStep(
@@ -22,6 +27,7 @@ public record PipelineStep(
         String systemPrompt,
         String outputSchema,
         Boolean storeInRag,
+        Boolean useRag,
         PipelineStep producer,
         PipelineStep itemAgent,
         PipelineStep collector
@@ -32,5 +38,13 @@ public record PipelineStep(
 
     public boolean isForEach() {
         return "forEach".equalsIgnoreCase(type);
+    }
+
+    public boolean shouldStoreInRag() {
+        return Boolean.TRUE.equals(storeInRag);
+    }
+
+    public boolean shouldUseRag() {
+        return Boolean.TRUE.equals(useRag);
     }
 }
