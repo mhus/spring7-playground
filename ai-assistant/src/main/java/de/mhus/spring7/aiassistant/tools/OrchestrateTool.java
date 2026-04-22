@@ -3,6 +3,8 @@ package de.mhus.spring7.aiassistant.tools;
 import java.util.List;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ResponseEntity;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.context.annotation.Lazy;
@@ -12,6 +14,7 @@ import de.mhus.spring7.aiassistant.plan.ExecutionContext;
 import de.mhus.spring7.aiassistant.plan.PipelineExecutor;
 import de.mhus.spring7.aiassistant.plan.Plan;
 import de.mhus.spring7.aiassistant.plan.PlannerPrompts;
+import de.mhus.spring7.aiassistant.storage.TokenTracker;
 
 /**
  * Exposes the plan/execute pipeline as a tool the assistant ChatClient can call during `say`.
@@ -25,10 +28,12 @@ public class OrchestrateTool {
 
     private final ChatClient planner;
     private final PipelineExecutor executor;
+    private final TokenTracker tokens;
 
-    public OrchestrateTool(ChatClient.Builder builder, @Lazy PipelineExecutor executor) {
+    public OrchestrateTool(ChatClient.Builder builder, @Lazy PipelineExecutor executor, TokenTracker tokens) {
         this.planner = builder.build();
         this.executor = executor;
+        this.tokens = tokens;
     }
 
     @Tool(description = """
@@ -41,11 +46,13 @@ public class OrchestrateTool {
     public String orchestrate(
             @ToolParam(description = "The full problem statement, self-contained.")
             String problem) {
-        Plan plan = planner.prompt()
+        ResponseEntity<ChatResponse, Plan> re = planner.prompt()
                 .system(PlannerPrompts.FORCE_SYSTEM)
                 .user(problem)
                 .call()
-                .entity(Plan.class);
+                .responseEntity(Plan.class);
+        tokens.record("orchestrate:planner", re.response().getMetadata().getUsage());
+        Plan plan = re.entity();
         if (plan == null || !plan.hasSteps()) {
             return "orchestrate: planner did not produce an executable plan";
         }

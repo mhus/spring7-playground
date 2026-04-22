@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import de.mhus.spring7.aiassistant.storage.ChatMessageDto;
 import de.mhus.spring7.aiassistant.storage.StorageService;
+import de.mhus.spring7.aiassistant.storage.TokenTracker;
 
 @Component
 public class AssistantCommands {
@@ -23,20 +25,25 @@ public class AssistantCommands {
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final StorageService storage;
+    private final TokenTracker tokens;
 
-    public AssistantCommands(ChatClient chatClient, ChatMemory chatMemory, StorageService storage) {
+    public AssistantCommands(ChatClient chatClient, ChatMemory chatMemory,
+                             StorageService storage, TokenTracker tokens) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.storage = storage;
+        this.tokens = tokens;
     }
 
     @Command(name = "say", group = "Assistant", description = "Send a message. Uses memory, tools, and imported PDFs.")
     public String say(@Argument(index = 0, description = "Your message.") String message) {
-        String content = chatClient.prompt()
+        ChatResponse resp = chatClient.prompt()
                 .user(message)
                 .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, CONVERSATION_ID))
                 .call()
-                .content();
+                .chatResponse();
+        tokens.record("say", resp.getMetadata().getUsage());
+        String content = resp.getResult().getOutput().getText();
         persistMemory();
         return content;
     }

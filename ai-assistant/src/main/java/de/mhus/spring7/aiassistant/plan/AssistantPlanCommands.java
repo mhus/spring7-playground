@@ -7,6 +7,8 @@ import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ResponseEntity;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.shell.core.command.annotation.Argument;
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.stereotype.Component;
@@ -15,6 +17,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import de.mhus.spring7.aiassistant.storage.StorageService;
+import de.mhus.spring7.aiassistant.storage.TokenTracker;
 
 @Component
 public class AssistantPlanCommands {
@@ -25,6 +28,7 @@ public class AssistantPlanCommands {
     private final PipelineExecutor pipelineExecutor;
     private final SharedRagStore rag;
     private final StorageService storage;
+    private final TokenTracker tokens;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private volatile String currentProblem;
@@ -34,11 +38,12 @@ public class AssistantPlanCommands {
     private final List<String> baseSettings = new CopyOnWriteArrayList<>();
 
     public AssistantPlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor,
-                                 SharedRagStore rag, StorageService storage) {
+                                 SharedRagStore rag, StorageService storage, TokenTracker tokens) {
         this.planner = builder.build();
         this.pipelineExecutor = pipelineExecutor;
         this.rag = rag;
         this.storage = storage;
+        this.tokens = tokens;
     }
 
     @Command(name = "plan", group = "Plan", description = "Design a new plan. Saves under an auto-generated name (slug + timestamp).")
@@ -214,11 +219,13 @@ public class AssistantPlanCommands {
     private String invokePlanner(String system, String user) {
         IO.println("[planner calling LLM…]");
         long t0 = System.currentTimeMillis();
-        Plan plan = planner.prompt()
+        ResponseEntity<ChatResponse, Plan> re = planner.prompt()
                 .system(system)
                 .user(user)
                 .call()
-                .entity(Plan.class);
+                .responseEntity(Plan.class);
+        tokens.record("planner", re.response().getMetadata().getUsage());
+        Plan plan = re.entity();
         IO.println("[planner done in " + (System.currentTimeMillis() - t0) + " ms]");
         if (plan == null) {
             return "planner returned nothing";

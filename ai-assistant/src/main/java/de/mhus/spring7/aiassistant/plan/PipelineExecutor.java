@@ -6,9 +6,11 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
+import de.mhus.spring7.aiassistant.storage.TokenTracker;
 import de.mhus.spring7.aiassistant.tools.AgentTool;
 
 @Component
@@ -24,9 +26,12 @@ public class PipelineExecutor {
 
     private final ChatClient executor;
     private final SharedRagStore rag;
+    private final TokenTracker tokens;
 
-    public PipelineExecutor(ChatClient.Builder builder, SharedRagStore rag, List<AgentTool> tools) {
+    public PipelineExecutor(ChatClient.Builder builder, SharedRagStore rag,
+                            List<AgentTool> tools, TokenTracker tokens) {
         this.rag = rag;
+        this.tokens = tokens;
         this.executor = tools.isEmpty()
                 ? builder.build()
                 : builder.defaultTools(tools.toArray()).build();
@@ -65,11 +70,13 @@ public class PipelineExecutor {
     private String runAgent(PipelineStep step, String input) {
         String userInput = step.shouldUseRag() ? augmentWithRag(input) : input;
         long t0 = System.currentTimeMillis();
-        String output = executor.prompt()
+        ChatResponse resp = executor.prompt()
                 .system(step.systemPrompt())
                 .user(userInput)
                 .call()
-                .content();
+                .chatResponse();
+        tokens.record("pipeline:" + step.name(), resp.getMetadata().getUsage());
+        String output = resp.getResult().getOutput().getText();
         long ms = System.currentTimeMillis() - t0;
         IO.println("[" + step.name() + " done in " + ms + " ms]");
         IO.println(output);
@@ -90,11 +97,13 @@ public class PipelineExecutor {
         IO.println("  ▸ producer: " + producer.name() + flags(producer));
         String producerInput = producer.shouldUseRag() ? augmentWithRag(input) : input;
         String producerSystem = producer.systemPrompt() + ITEM_PRODUCER_HINT;
-        String producerOut = executor.prompt()
+        ChatResponse producerResp = executor.prompt()
                 .system(producerSystem)
                 .user(producerInput)
                 .call()
-                .content();
+                .chatResponse();
+        tokens.record("pipeline:" + producer.name(), producerResp.getMetadata().getUsage());
+        String producerOut = producerResp.getResult().getOutput().getText();
         List<String> items = Arrays.stream(producerOut.split("\\R"))
                 .map(String::strip)
                 .filter(s -> !s.isEmpty())
@@ -111,11 +120,13 @@ public class PipelineExecutor {
             IO.println("  ▸ item " + k + "/" + items.size() + flags(itemAgent) + ": " + preview(item));
             String itemInput = itemAgent.shouldUseRag() ? augmentWithRag(item) : item;
             long t0 = System.currentTimeMillis();
-            String out = executor.prompt()
+            ChatResponse itemResp = executor.prompt()
                     .system(itemAgent.systemPrompt())
                     .user(itemInput)
                     .call()
-                    .content();
+                    .chatResponse();
+            tokens.record("pipeline:" + itemAgent.name(), itemResp.getMetadata().getUsage());
+            String out = itemResp.getResult().getOutput().getText();
             long ms = System.currentTimeMillis() - t0;
             IO.println("  [" + itemAgent.name() + " #" + k + " done in " + ms + " ms]");
             IO.println(out);

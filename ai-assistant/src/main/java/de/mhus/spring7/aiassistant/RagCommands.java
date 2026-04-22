@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.reader.pdf.ParagraphPdfDocumentReader;
@@ -22,6 +23,7 @@ import org.springframework.stereotype.Component;
 
 import de.mhus.spring7.aiassistant.plan.SharedRagStore;
 import de.mhus.spring7.aiassistant.storage.StorageService;
+import de.mhus.spring7.aiassistant.storage.TokenTracker;
 
 @Component
 public class RagCommands {
@@ -38,14 +40,16 @@ public class RagCommands {
     private final ChatClient generator;
     private final StorageService storage;
     private final SharedRagStore planRag;
+    private final TokenTracker tokens;
     private final Map<String, Document> storedDocs = new ConcurrentHashMap<>();
 
     public RagCommands(VectorStore vectorStore, ChatClient.Builder builder,
-                       StorageService storage, @Lazy SharedRagStore planRag) {
+                       StorageService storage, @Lazy SharedRagStore planRag, TokenTracker tokens) {
         this.vectorStore = vectorStore;
         this.generator = builder.build();
         this.storage = storage;
         this.planRag = planRag;
+        this.tokens = tokens;
     }
 
     public Collection<Document> storedDocs() {
@@ -80,11 +84,13 @@ public class RagCommands {
 
     @Command(name = "generate", group = "RAG", description = "Generate statements with the LLM and store them as RAG chunks.")
     public String generate(@Argument(index = 0, description = "Instruction, e.g. 'erstelle 40 aussagen zum thema Formel 1'.") String instruction) {
-        String content = generator.prompt()
+        ChatResponse resp = generator.prompt()
                 .system(GENERATOR_SYSTEM)
                 .user(instruction)
                 .call()
-                .content();
+                .chatResponse();
+        tokens.record("generate", resp.getMetadata().getUsage());
+        String content = resp.getResult().getOutput().getText();
         List<Document> docs = Arrays.stream(content.split("\\R"))
                 .map(String::strip)
                 .filter(s -> !s.isEmpty())
