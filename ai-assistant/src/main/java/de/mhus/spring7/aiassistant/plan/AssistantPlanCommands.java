@@ -29,21 +29,23 @@ public class AssistantPlanCommands {
     private final SharedRagStore rag;
     private final StorageService storage;
     private final TokenTracker tokens;
+    private final BaseSettings baseSettings;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private volatile String currentProblem;
     private volatile Plan currentPlan;
     private volatile String currentPlanName;
     private final List<String> clarifications = new CopyOnWriteArrayList<>();
-    private final List<String> baseSettings = new CopyOnWriteArrayList<>();
 
     public AssistantPlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor,
-                                 SharedRagStore rag, StorageService storage, TokenTracker tokens) {
+                                 SharedRagStore rag, StorageService storage, TokenTracker tokens,
+                                 BaseSettings baseSettings) {
         this.planner = builder.build();
         this.pipelineExecutor = pipelineExecutor;
         this.rag = rag;
         this.storage = storage;
         this.tokens = tokens;
+        this.baseSettings = baseSettings;
     }
 
     @Command(name = "plan", group = "Plan", description = "Design a new plan. Saves under an auto-generated name (slug + timestamp).")
@@ -68,9 +70,9 @@ public class AssistantPlanCommands {
         return invokePlanner(PlannerPrompts.PLANNER_SYSTEM, buildInitialUserPrompt());
     }
 
-    @Command(name = "set", group = "Plan", description = "Add a base setting that applies to all plans (e.g. 'sprache: deutsch').")
+    @Command(name = "set", group = "Plan", description = "Add a base setting that applies to plans and sub-tasks (e.g. 'sprache: deutsch').")
     public String set(@Argument(index = 0, description = "The setting.") String setting) {
-        baseSettings.add(setting.strip());
+        baseSettings.add(setting);
         return "base settings now:" + renderSettings();
     }
 
@@ -81,8 +83,7 @@ public class AssistantPlanCommands {
 
     @Command(name = "unset", group = "Plan", description = "Clear all base settings.")
     public String unset() {
-        int n = baseSettings.size();
-        baseSettings.clear();
+        int n = baseSettings.clear();
         return "cleared " + n + " base settings";
     }
 
@@ -126,7 +127,7 @@ public class AssistantPlanCommands {
         if (!currentPlan.hasSteps()) {
             return "plan has no steps — answer, force or refine first";
         }
-        ExecutionContext ctx = new ExecutionContext(currentProblem, List.copyOf(baseSettings));
+        ExecutionContext ctx = new ExecutionContext(currentProblem, baseSettings.all());
         storage.runWithLogging(() -> pipelineExecutor.execute(currentPlan, ctx));
         return "═══ finished " + currentPlan.steps().size() + " steps ═══";
     }
@@ -274,11 +275,7 @@ public class AssistantPlanCommands {
         }
         StringBuilder sb = new StringBuilder();
         if (!baseSettings.isEmpty()) {
-            sb.append("Base settings (always apply, do not ask about these):\n");
-            for (String s : baseSettings) {
-                sb.append("- ").append(s).append("\n");
-            }
-            sb.append("\n");
+            sb.append(baseSettings.renderBlock()).append("\n");
         }
         sb.append("Original problem:\n").append(currentProblem).append("\n");
         if (!clarifications.isEmpty()) {
@@ -325,7 +322,7 @@ public class AssistantPlanCommands {
     private String renderSettings() {
         StringBuilder sb = new StringBuilder();
         int i = 1;
-        for (String s : baseSettings) {
+        for (String s : baseSettings.all()) {
             sb.append("\n  [").append(i++).append("] ").append(s);
         }
         return sb.toString();

@@ -18,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 
 import de.mhus.spring7.aiassistant.tools.AgentTool;
 import de.mhus.spring7.aiassistant.tools.OrchestrateTool;
+import de.mhus.spring7.aiassistant.tools.SubtaskTool;
 
 @SpringBootApplication
 public class AiAssistantApplication {
@@ -42,11 +43,13 @@ public class AiAssistantApplication {
                           VectorStore vectorStore,
                           AssistantTools tools,
                           List<AgentTool> agentTools,
-                          OrchestrateTool orchestrateTool) {
+                          OrchestrateTool orchestrateTool,
+                          SubtaskTool subtaskTool) {
         List<Object> allTools = new ArrayList<>();
         allTools.add(tools);
         allTools.addAll(agentTools);
         allTools.add(orchestrateTool);
+        allTools.add(subtaskTool);
         return builder
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
