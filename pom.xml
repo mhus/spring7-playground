@@ -27,6 +27,7 @@
         <module>ai-agent</module>
         <module>ai-rag</module>
         <module>ai-assistant</module>
+        <module>ai-plan</module>
     </modules>
 
     <properties>
