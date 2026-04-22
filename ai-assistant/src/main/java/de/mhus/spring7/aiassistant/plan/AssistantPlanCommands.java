@@ -1,4 +1,4 @@
-package de.mhus.spring7.aiplan;
+package de.mhus.spring7.aiassistant.plan;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -12,91 +12,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Component
-public class PlanCommands {
-
-    private static final String PLANNER_SYSTEM = """
-            You design a pipeline of specialist sub-agents that together solve the user's problem.
-
-            Each pipeline step has a `type`. Only TWO values are allowed — exactly these, nothing else:
-              - "agent":   a single LLM call. Fields: name, systemPrompt.
-              - "forEach": run an item-agent over a list of items. Fields:
-                           producer   (agent whose output is a list, one item per line)
-                           itemAgent  (agent that is called once per item; its user input is the item)
-                           collector  (optional agent that merges all item outputs into the final output)
-
-            DO NOT invent other type values like "research", "summarize", "write", "edit" etc.
-            A research step is just an "agent" step with storeInRag=true. A writer step is just
-            an "agent" step. The ROLE of the step goes into `name` and `systemPrompt`, NOT into `type`.
-
-            Sequencing: output of step N becomes user input of step N+1.
-            The first step receives the original problem statement as user input.
-            The last step's output is the final deliverable.
-
-            Pick forEach ONLY when the problem naturally decomposes into independent sub-tasks
-            (e.g. "write 5 chapters", "generate 10 variations", "translate into 3 languages").
-            Otherwise stick to plain agent steps.
-
-            Available tools (agents may call these during their LLM call; mention them in systemPrompt
-            when the task needs precision):
-              - executeJavaScript(code): runs Mozilla Rhino JavaScript. Use for math, sorting,
-                filtering, aggregation, string processing, date math. Prefer calling this tool over
-                approximating. The value of the last expression is returned.
-
-            RAG (shared knowledge store between steps):
-              - `storeInRag: true` on an agent means its output is written to the shared store
-                (chunked and embedded). Use this for RESEARCH steps: facts, character sheets,
-                world-building notes, references that later steps need to look up.
-              - `useRag: true` on an agent means the top-K matching chunks are prepended to its
-                user input as context before the call. Use this for WRITER/DECISION steps that
-                benefit from earlier research — especially inside forEach, where each item-agent
-                runs in isolation and cannot see earlier outputs directly.
-              - A common pattern: agent "Researcher" (storeInRag=true) → forEach with
-                itemAgent (useRag=true). The itemAgent then pulls only the relevant bits per item.
-              - Omit both flags for steps that only need the direct sequential input/output.
-
-            You MUST use the openQuestions field (and return an empty steps list) whenever ANY of these are true:
-            - Target audience is not specified.
-            - Output format, medium, or length is not specified.
-            - Tone, style, or language is not specified.
-            - Domain/subject is vague without a concrete topic.
-            - There are ambiguous terms that could reasonably mean different things.
-            - You would otherwise have to guess or invent constraints to produce a good plan.
-
-            Only return populated `steps` when the problem is concrete enough that two competent
-            humans would plan it the same way. If tempted to "assume reasonable defaults", ask instead.
-
-            Ask 1 to 4 questions at a time; each targets ONE missing piece and is answerable in one sentence.
-
-            Planning rules (when returning steps):
-            - 2 to 5 top-level steps. Fewer is usually better.
-            - Each agent/item prompt is self-contained and specific: role, expected input, exact output format.
-              No meta-commentary. Do not mention other agents inside a systemPrompt.
-            - Fields you don't use (e.g. outputSchema, storeInRag, dependsOn, producer/itemAgent/collector
-              for agent steps) may be omitted.
-
-            Examples:
-            - "Write a 300-word neutral intro article about horses for adults" →
-              steps: [agent Outliner, agent Writer, agent Lector]
-            - "Write a 5-chapter short fantasy novel, each chapter ~500 words" →
-              steps: [agent Outliner (plot+characters+chapter list), forEach (producer=ChapterLister,
-                      itemAgent=ChapterWriter, collector=FinalAssembler), agent Lector]
-            """;
-
-    private static final String FORCE_SYSTEM = """
-            You design a pipeline of specialist sub-agents. Same rules and step types as the planner.
-            The user has decided NOT to answer further clarifying questions.
-            You MUST return a populated `steps` list and an EMPTY `openQuestions` list.
-            Make reasonable, explicit assumptions for any missing information and reflect them
-            clearly inside the relevant systemPrompts. Do not ask questions. Do not refuse.
-            """;
-
-    private static final String REFINE_SYSTEM = """
-            You revise an existing agent pipeline based on a user instruction.
-            Apply the user's change to the current plan and return the updated plan.
-            Keep steps not affected by the instruction unchanged.
-            Same output rules and step types as the initial planner.
-            If the instruction is ambiguous, return openQuestions instead of guessing.
-            """;
+public class AssistantPlanCommands {
 
     private final ChatClient planner;
     private final PipelineExecutor pipelineExecutor;
@@ -108,48 +24,17 @@ public class PlanCommands {
     private final List<String> clarifications = new CopyOnWriteArrayList<>();
     private final List<String> baseSettings = new CopyOnWriteArrayList<>();
 
-    public PlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor, SharedRagStore rag) {
+    public AssistantPlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor, SharedRagStore rag) {
         this.planner = builder.build();
         this.pipelineExecutor = pipelineExecutor;
         this.rag = rag;
     }
 
-    @Command(name = "plan", group = "Plan", description = "Design a pipeline of sub-agents for the given problem. Clears RAG.")
+    @Command(name = "plan", group = "Plan", description = "Design a pipeline of sub-agents for the given problem.")
     public String plan(@Argument(index = 0, description = "Problem statement.") String problem) {
         this.currentProblem = problem;
         this.clarifications.clear();
-        int cleared = rag.clear();
-        if (cleared > 0) {
-            IO.println("[cleared " + cleared + " RAG chunks for new problem]");
-        }
-        return invokePlanner(PLANNER_SYSTEM, buildInitialUserPrompt());
-    }
-
-    @Command(name = "ingest", group = "RAG", description = "Add text to the shared RAG store (between plan and run, or any time).")
-    public String ingest(@Argument(index = 0, description = "Text to store. Multi-line text will be chunked by token splitter.") String text) {
-        int n = rag.add(text, "user-ingest");
-        return "ingested " + n + " chunks (total now: " + rag.size() + ")";
-    }
-
-    @Command(name = "rag", group = "RAG", description = "Show stored RAG chunks (count and previews).")
-    public String ragShow() {
-        if (rag.size() == 0) {
-            return "(empty)";
-        }
-        StringBuilder sb = new StringBuilder("RAG chunks: ").append(rag.size()).append("\n");
-        int i = 1;
-        for (var d : rag.all()) {
-            Object src = d.getMetadata().get("source");
-            sb.append("  [").append(i++).append("] ").append(src == null ? "?" : src).append(" · ")
-              .append(preview(d.getText())).append("\n");
-        }
-        return sb.toString();
-    }
-
-    @Command(name = "rag-clear", group = "RAG", description = "Clear the shared RAG store manually.")
-    public String ragClear() {
-        int n = rag.clear();
-        return "cleared " + n + " RAG chunks";
+        return invokePlanner(PlannerPrompts.PLANNER_SYSTEM, buildInitialUserPrompt());
     }
 
     @Command(name = "answer", group = "Plan", description = "Answer the planner's open questions and re-plan.")
@@ -163,7 +48,7 @@ public class PlanCommands {
         }
         block.append("A: ").append(answer);
         clarifications.add(block.toString());
-        return invokePlanner(PLANNER_SYSTEM, buildInitialUserPrompt());
+        return invokePlanner(PlannerPrompts.PLANNER_SYSTEM, buildInitialUserPrompt());
     }
 
     @Command(name = "set", group = "Plan", description = "Add a base setting that applies to all plans (e.g. 'sprache: deutsch').")
@@ -189,7 +74,7 @@ public class PlanCommands {
         if (currentProblem == null) {
             return "no problem — run 'plan <problem>' first";
         }
-        return invokePlanner(FORCE_SYSTEM, buildInitialUserPrompt());
+        return invokePlanner(PlannerPrompts.FORCE_SYSTEM, buildInitialUserPrompt());
     }
 
     @Command(name = "refine", group = "Plan", description = "Adjust the current plan via a natural-language instruction.")
@@ -213,7 +98,7 @@ public class PlanCommands {
                 User instruction:
                 %s
                 """.formatted(currentProblem, planJson, instruction);
-        return invokePlanner(REFINE_SYSTEM, user);
+        return invokePlanner(PlannerPrompts.REFINE_SYSTEM, user);
     }
 
     @Command(name = "run", group = "Plan", description = "Execute the most recently created plan.")
@@ -237,6 +122,33 @@ public class PlanCommands {
         }
         String runOutput = run();
         return planOutput + "\n\n" + runOutput;
+    }
+
+    @Command(name = "ingest", group = "Plan", description = "Add text to the shared RAG (plan-tracked, cleared by rag-clear).")
+    public String ingest(@Argument(index = 0, description = "Text to store.") String text) {
+        int n = rag.add(text, "user-ingest");
+        return "ingested " + n + " chunks (plan-tracked total: " + rag.size() + ")";
+    }
+
+    @Command(name = "rag", group = "Plan", description = "Show plan-tracked RAG chunks.")
+    public String ragShow() {
+        if (rag.size() == 0) {
+            return "(plan RAG is empty — note: assistant-side import/generate use a separate tracker)";
+        }
+        StringBuilder sb = new StringBuilder("plan RAG chunks: ").append(rag.size()).append("\n");
+        int i = 1;
+        for (var d : rag.all()) {
+            Object src = d.getMetadata().get("source");
+            sb.append("  [").append(i++).append("] ").append(src == null ? "?" : src).append(" · ")
+              .append(preview(d.getText())).append("\n");
+        }
+        return sb.toString();
+    }
+
+    @Command(name = "rag-clear", group = "Plan", description = "Clear only the plan-tracked RAG entries.")
+    public String ragClear() {
+        int n = rag.clear();
+        return "cleared " + n + " plan RAG chunks";
     }
 
     private String invokePlanner(String system, String user) {

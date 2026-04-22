@@ -1,4 +1,4 @@
-package de.mhus.spring7.aiplan;
+package de.mhus.spring7.aiassistant.plan;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -9,7 +9,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
-import de.mhus.spring7.aiplan.tools.AgentTool;
+import de.mhus.spring7.aiassistant.tools.AgentTool;
 
 @Component
 public class PipelineExecutor {
@@ -55,7 +55,6 @@ public class PipelineExecutor {
         if (step.isAgent()) {
             return runAgent(step, toText(input));
         }
-        // Planner sometimes invents types like "research" or "summarize" — treat them as agents.
         if (step.systemPrompt() != null && !step.systemPrompt().isBlank()) {
             IO.println("  [unknown type '" + step.type() + "' — running as agent]");
             return runAgent(step, toText(input));
