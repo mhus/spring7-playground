@@ -1,6 +1,7 @@
 application-default.properties
-.idea
-target
+.idea/
+target/
+data/
 *.iml
 *.log
 *.class

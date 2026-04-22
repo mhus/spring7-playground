@@ -1,6 +1,9 @@
 package de.mhus.spring7.aiassistant.plan;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.springframework.ai.chat.client.ChatClient;
@@ -11,33 +14,42 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import de.mhus.spring7.aiassistant.storage.StorageService;
+
 @Component
 public class AssistantPlanCommands {
+
+    private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private final ChatClient planner;
     private final PipelineExecutor pipelineExecutor;
     private final SharedRagStore rag;
+    private final StorageService storage;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private volatile String currentProblem;
     private volatile Plan currentPlan;
+    private volatile String currentPlanName;
     private final List<String> clarifications = new CopyOnWriteArrayList<>();
     private final List<String> baseSettings = new CopyOnWriteArrayList<>();
 
-    public AssistantPlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor, SharedRagStore rag) {
+    public AssistantPlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor,
+                                 SharedRagStore rag, StorageService storage) {
         this.planner = builder.build();
         this.pipelineExecutor = pipelineExecutor;
         this.rag = rag;
+        this.storage = storage;
     }
 
-    @Command(name = "plan", group = "Plan", description = "Design a pipeline of sub-agents for the given problem.")
+    @Command(name = "plan", group = "Plan", description = "Design a new plan. Saves under an auto-generated name (slug + timestamp).")
     public String plan(@Argument(index = 0, description = "Problem statement.") String problem) {
         this.currentProblem = problem;
+        this.currentPlanName = newPlanName(problem);
         this.clarifications.clear();
         return invokePlanner(PlannerPrompts.PLANNER_SYSTEM, buildInitialUserPrompt());
     }
 
-    @Command(name = "answer", group = "Plan", description = "Answer the planner's open questions and re-plan.")
+    @Command(name = "answer", group = "Plan", description = "Answer the planner's open questions and re-plan (same plan name).")
     public String answer(@Argument(index = 0, description = "Your answer(s) to the open questions.") String answer) {
         if (currentPlan == null || !currentPlan.hasQuestions()) {
             return "no open questions — run 'plan <problem>' first";
@@ -101,7 +113,7 @@ public class AssistantPlanCommands {
         return invokePlanner(PlannerPrompts.REFINE_SYSTEM, user);
     }
 
-    @Command(name = "run", group = "Plan", description = "Execute the most recently created plan.")
+    @Command(name = "run", group = "Plan", description = "Execute the current plan.")
     public String run() {
         if (currentPlan == null) {
             return "no plan — run 'plan <problem>' first";
@@ -110,7 +122,7 @@ public class AssistantPlanCommands {
             return "plan has no steps — answer, force or refine first";
         }
         ExecutionContext ctx = new ExecutionContext(currentProblem, List.copyOf(baseSettings));
-        pipelineExecutor.execute(currentPlan, ctx);
+        storage.runWithLogging(() -> pipelineExecutor.execute(currentPlan, ctx));
         return "═══ finished " + currentPlan.steps().size() + " steps ═══";
     }
 
@@ -124,7 +136,55 @@ public class AssistantPlanCommands {
         return planOutput + "\n\n" + runOutput;
     }
 
-    @Command(name = "ingest", group = "Plan", description = "Add text to the shared RAG (plan-tracked, cleared by rag-clear).")
+    @Command(name = "plans", group = "Plan", description = "List all saved plans in this session.")
+    public String plans() {
+        List<String> names = storage.listPlans();
+        if (names.isEmpty()) return "(no saved plans)";
+        StringBuilder sb = new StringBuilder();
+        for (String n : names) {
+            sb.append(n.equals(currentPlanName) ? "* " : "  ").append(n).append("\n");
+        }
+        return sb.toString();
+    }
+
+    @Command(name = "load-plan", group = "Plan", description = "Set a saved plan as current.")
+    public String loadPlan(@Argument(index = 0, description = "Plan name (see 'plans').") String name) {
+        StoredPlan sp = storage.loadPlan(name);
+        if (sp == null) return "plan not found: " + name;
+        this.currentPlan = sp.plan();
+        this.currentProblem = sp.problem();
+        this.currentPlanName = name;
+        this.clarifications.clear();
+        storage.setCurrentPlanName(name);
+        return "loaded plan: " + name + "\n" + renderPlan(sp.plan());
+    }
+
+    @Command(name = "rename-plan", group = "Plan", description = "Rename the current plan file.")
+    public String renamePlan(@Argument(index = 0, description = "New name (slug — letters, digits, dashes).") String newName) {
+        if (currentPlanName == null) return "no current plan";
+        String clean = slugify(newName, 60);
+        if (clean.isEmpty()) return "invalid name";
+        boolean ok = storage.renamePlan(currentPlanName, clean);
+        if (!ok) return "rename failed (target exists or source missing)";
+        this.currentPlanName = clean;
+        storage.setCurrentPlanName(clean);
+        return "renamed to: " + clean;
+    }
+
+    @Command(name = "delete-plan", group = "Plan", description = "Delete a saved plan.")
+    public String deletePlan(@Argument(index = 0, description = "Plan name to delete.") String name) {
+        boolean deleted = storage.deletePlan(name);
+        if (!deleted) return "plan not found: " + name;
+        if (name.equals(currentPlanName)) {
+            this.currentPlan = null;
+            this.currentProblem = null;
+            this.currentPlanName = null;
+            storage.setCurrentPlanName(null);
+        }
+        return "deleted: " + name;
+    }
+
+    @Command(name = "ingest", group = "Plan", description = "Add text to the shared RAG (plan-tracked).")
     public String ingest(@Argument(index = 0, description = "Text to store.") String text) {
         int n = rag.add(text, "user-ingest");
         return "ingested " + n + " chunks (plan-tracked total: " + rag.size() + ")";
@@ -164,13 +224,41 @@ public class AssistantPlanCommands {
             return "planner returned nothing";
         }
         this.currentPlan = plan;
+        if (currentPlanName == null) {
+            this.currentPlanName = newPlanName(currentProblem);
+        }
+        storage.savePlan(currentPlanName, new StoredPlan(currentProblem, plan));
+        storage.setCurrentPlanName(currentPlanName);
         if (plan.hasQuestions()) {
-            return renderQuestions(plan);
+            return "[plan name: " + currentPlanName + "]\n" + renderQuestions(plan);
         }
         if (!plan.hasSteps()) {
             return "planner returned neither steps nor questions";
         }
-        return renderPlan(plan);
+        return "[plan name: " + currentPlanName + "]\n" + renderPlan(plan);
+    }
+
+    public void reloadFromStorage() {
+        String name = storage.currentPlanName();
+        if (name == null) {
+            this.currentPlan = null;
+            this.currentProblem = null;
+            this.currentPlanName = null;
+            this.clarifications.clear();
+            return;
+        }
+        StoredPlan sp = storage.loadPlan(name);
+        if (sp == null) {
+            this.currentPlan = null;
+            this.currentProblem = null;
+            this.currentPlanName = null;
+            this.clarifications.clear();
+            return;
+        }
+        this.currentPlan = sp.plan();
+        this.currentProblem = sp.problem();
+        this.currentPlanName = name;
+        this.clarifications.clear();
     }
 
     private String buildInitialUserPrompt() {
@@ -234,6 +322,21 @@ public class AssistantPlanCommands {
             sb.append("\n  [").append(i++).append("] ").append(s);
         }
         return sb.toString();
+    }
+
+    private static String newPlanName(String problem) {
+        return slugify(problem, 40) + "-" + LocalDateTime.now().format(TS);
+    }
+
+    private static String slugify(String text, int maxLen) {
+        if (text == null || text.isBlank()) return "plan";
+        String t = text.toLowerCase(Locale.ROOT)
+                .replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-+|-+$", "");
+        if (t.isEmpty()) return "plan";
+        if (t.length() > maxLen) t = t.substring(0, maxLen).replaceAll("-+$", "");
+        return t;
     }
 
     private static String preview(String text) {

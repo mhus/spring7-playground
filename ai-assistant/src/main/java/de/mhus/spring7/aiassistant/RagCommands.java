@@ -2,6 +2,7 @@ package de.mhus.spring7.aiassistant;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,10 +14,14 @@ import org.springframework.ai.reader.pdf.ParagraphPdfDocumentReader;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.shell.core.command.annotation.Argument;
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.stereotype.Component;
+
+import de.mhus.spring7.aiassistant.plan.SharedRagStore;
+import de.mhus.spring7.aiassistant.storage.StorageService;
 
 @Component
 public class RagCommands {
@@ -31,11 +36,31 @@ public class RagCommands {
 
     private final VectorStore vectorStore;
     private final ChatClient generator;
+    private final StorageService storage;
+    private final SharedRagStore planRag;
     private final Map<String, Document> storedDocs = new ConcurrentHashMap<>();
 
-    public RagCommands(VectorStore vectorStore, ChatClient.Builder builder) {
+    public RagCommands(VectorStore vectorStore, ChatClient.Builder builder,
+                       StorageService storage, @Lazy SharedRagStore planRag) {
         this.vectorStore = vectorStore;
         this.generator = builder.build();
+        this.storage = storage;
+        this.planRag = planRag;
+    }
+
+    public Collection<Document> storedDocs() {
+        return storedDocs.values();
+    }
+
+    public void reloadFromStorage() {
+        if (!storedDocs.isEmpty()) {
+            vectorStore.delete(new ArrayList<>(storedDocs.keySet()));
+            storedDocs.clear();
+        }
+        storage.loadRagVectors(vectorStore);
+        for (Document d : storage.loadAssistantDocs()) {
+            storedDocs.put(d.getId(), d);
+        }
     }
 
     @Command(name = "import", group = "RAG", description = "Import a PDF file into the RAG vector store.")
@@ -49,6 +74,7 @@ public class RagCommands {
         List<Document> chunks = TokenTextSplitter.builder().build().apply(docs);
         vectorStore.add(chunks);
         chunks.forEach(c -> storedDocs.put(c.getId(), c));
+        persist();
         return "imported " + chunks.size() + " chunks from " + path;
     }
 
@@ -69,6 +95,7 @@ public class RagCommands {
         }
         vectorStore.add(docs);
         docs.forEach(d -> storedDocs.put(d.getId(), d));
+        persist();
         return "generated and stored " + docs.size() + " statements";
     }
 
@@ -106,13 +133,18 @@ public class RagCommands {
         return "chunks stored: " + storedDocs.size();
     }
 
-    @Command(name = "forget", group = "RAG", description = "Clear the RAG vector store (keeps conversation memory).")
+    @Command(name = "forget", group = "RAG", description = "Clear the assistant-tracked RAG entries (keeps plan-side).")
     public String forget() {
         if (!storedDocs.isEmpty()) {
             vectorStore.delete(new ArrayList<>(storedDocs.keySet()));
             storedDocs.clear();
+            persist();
         }
-        return "vector store cleared";
+        return "assistant RAG cleared";
+    }
+
+    private void persist() {
+        storage.persistRag(vectorStore, new ArrayList<>(storedDocs.values()), planRag.all());
     }
 
     private static String preview(String text) {

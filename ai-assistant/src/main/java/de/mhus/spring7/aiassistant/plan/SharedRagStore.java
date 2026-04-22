@@ -9,21 +9,28 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
+import de.mhus.spring7.aiassistant.RagCommands;
+import de.mhus.spring7.aiassistant.storage.StorageService;
+
 /**
- * Tracks documents that were added via the plan/pipeline. Shares the same VectorStore as the
- * assistant (imported PDFs, generated statements), but clearing here only removes plan-added
- * entries so assistant state stays intact.
+ * Tracks documents added via the plan/pipeline. Shares the same VectorStore as the assistant
+ * (imported PDFs, generated statements). Clearing here only removes plan-added entries.
  */
 @Component
 public class SharedRagStore {
 
     private final VectorStore vectorStore;
+    private final StorageService storage;
+    private final ObjectProvider<RagCommands> assistantRag;
     private final List<Document> stored = new CopyOnWriteArrayList<>();
 
-    public SharedRagStore(VectorStore vectorStore) {
+    public SharedRagStore(VectorStore vectorStore, StorageService storage, ObjectProvider<RagCommands> assistantRag) {
         this.vectorStore = vectorStore;
+        this.storage = storage;
+        this.assistantRag = assistantRag;
     }
 
     public int add(String text, String source) {
@@ -35,6 +42,7 @@ public class SharedRagStore {
         List<Document> chunks = TokenTextSplitter.builder().build().apply(raw);
         vectorStore.add(chunks);
         stored.addAll(chunks);
+        persist();
         return chunks.size();
     }
 
@@ -48,6 +56,7 @@ public class SharedRagStore {
         if (docs.isEmpty()) return 0;
         vectorStore.add(docs);
         stored.addAll(docs);
+        persist();
         return docs.size();
     }
 
@@ -71,6 +80,27 @@ public class SharedRagStore {
         for (Document d : stored) ids.add(d.getId());
         vectorStore.delete(ids);
         stored.clear();
+        persist();
         return n;
+    }
+
+    public void reloadFromStorage() {
+        if (!stored.isEmpty()) {
+            List<String> ids = new ArrayList<>();
+            for (Document d : stored) ids.add(d.getId());
+            vectorStore.delete(ids);
+            stored.clear();
+        }
+        storage.loadRagVectors(vectorStore);
+        stored.addAll(storage.loadPlanDocs());
+    }
+
+    private void persist() {
+        List<Document> assistantDocs = new ArrayList<>();
+        RagCommands rc = assistantRag.getIfAvailable();
+        if (rc != null) {
+            assistantDocs.addAll(rc.storedDocs());
+        }
+        storage.persistRag(vectorStore, assistantDocs, new ArrayList<>(stored));
     }
 }
