@@ -69,11 +69,24 @@ public class AssistantCommands {
     @Command(name = "tools", group = "Assistant", description = "List the tools available to the agent.")
     public String tools() {
         return String.join("\n", List.of(
-                "currentTime() - current local time",
-                "listFiles(path) - list files in directory",
-                "readFile(path) - read file content",
-                "executeJavaScript(code) - run Mozilla Rhino JavaScript",
-                "orchestrate(problem) - run a multi-agent pipeline for a complex task"
+                "currentTime()                              - current local date/time",
+                "executeCommand(cmd)                        - run a shell command (async, 15s wait)",
+                "getTaskOutput(id)                          - query a previously started shell task",
+                "killTask(id)                               - kill a running shell task",
+                "executeJavaScript(code)                    - run Mozilla Rhino JavaScript inline",
+                "listDirectory(path)                        - list a filesystem directory",
+                "readFile(path, startLine?, maxLines?)      - read text file, paged",
+                "writeFile(path, content)                   - create or overwrite a file",
+                "editFile(path, oldText, newText)           - replace one occurrence in a file",
+                "appendFile(path, content)                  - append to a file",
+                "writeSessionFile(rel, content)             - create/overwrite in session workspace",
+                "readSessionFile(rel)                       - read from session workspace",
+                "editSessionFile(rel, oldText, newText)     - edit in session workspace",
+                "deleteSessionFile(rel)                     - delete in session workspace",
+                "listSessionFiles()                         - list session workspace",
+                "executeSessionJavaScript(rel)              - run a JS file from the workspace",
+                "orchestrate(problem)                       - multi-agent pipeline for a structured task",
+                "subtask(task, context?, persona?)          - fresh sub-LLM with same tools, no memory"
         ));
     }
 

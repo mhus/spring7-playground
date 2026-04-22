@@ -379,6 +379,16 @@ public class StorageService {
         return loadChatMemory().size();
     }
 
+    public Path workspaceDir() {
+        Path d = sessionDir().resolve("workspace");
+        try {
+            Files.createDirectories(d);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return d;
+    }
+
     public List<String> listRuns() {
         Path d = sessionDir().resolve("runs");
         if (!Files.isDirectory(d)) return List.of();
