@@ -93,6 +93,8 @@ public class AssistantCommands {
                 "listProjectFiles()                         - list project scope",
                 "getProjectPath()                           - absolute path of project scope",
                 "ingestProjectFile(rel)                     - load a project file into session RAG",
+                "listDocs()                                 - list bundled how-to docs",
+                "readDoc(name)                              - read a how-to doc (e.g. 'tools')",
                 "findTools(query)                           - search external tool registry",
                 "describeTool(name)                         - get params schema of an external tool",
                 "invokeTool(name, jsonArgs)                 - call an external tool",
