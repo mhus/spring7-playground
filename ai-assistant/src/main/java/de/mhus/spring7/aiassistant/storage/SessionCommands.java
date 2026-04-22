@@ -8,7 +8,9 @@ import org.springframework.stereotype.Component;
 
 import de.mhus.spring7.aiassistant.AssistantCommands;
 import de.mhus.spring7.aiassistant.RagCommands;
+import de.mhus.spring7.aiassistant.memory.PinService;
 import de.mhus.spring7.aiassistant.plan.AssistantPlanCommands;
+import de.mhus.spring7.aiassistant.plan.BaseSettings;
 import de.mhus.spring7.aiassistant.plan.SharedRagStore;
 import de.mhus.spring7.aiassistant.tools.ExecManager;
 
@@ -21,19 +23,25 @@ public class SessionCommands {
     private final RagCommands ragCommands;
     private final SharedRagStore sharedRagStore;
     private final ExecManager execManager;
+    private final PinService pins;
+    private final BaseSettings baseSettings;
 
     public SessionCommands(StorageService storage,
                            AssistantCommands assistantCommands,
                            AssistantPlanCommands planCommands,
                            RagCommands ragCommands,
                            SharedRagStore sharedRagStore,
-                           ExecManager execManager) {
+                           ExecManager execManager,
+                           PinService pins,
+                           BaseSettings baseSettings) {
         this.storage = storage;
         this.assistantCommands = assistantCommands;
         this.planCommands = planCommands;
         this.ragCommands = ragCommands;
         this.sharedRagStore = sharedRagStore;
         this.execManager = execManager;
+        this.pins = pins;
+        this.baseSettings = baseSettings;
     }
 
     private void reloadAll() {
@@ -42,6 +50,8 @@ public class SessionCommands {
         ragCommands.reloadFromStorage();
         sharedRagStore.reloadFromStorage();
         execManager.reloadFromStorage();
+        pins.reloadFromStorage();
+        baseSettings.reloadFromStorage();
     }
 
     @Command(name = "session", group = "Session", description = "Show the current session id and stats.")

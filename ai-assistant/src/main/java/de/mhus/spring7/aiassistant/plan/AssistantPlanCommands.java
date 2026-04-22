@@ -246,6 +246,8 @@ public class AssistantPlanCommands {
         return "[plan name: " + currentPlanName + "]\n" + renderPlan(plan);
     }
 
+    public String currentPlanName() { return currentPlanName; }
+
     public void reloadFromStorage() {
         String name = storage.currentPlanName();
         if (name == null) {

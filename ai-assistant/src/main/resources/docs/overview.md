@@ -18,7 +18,8 @@ currently need — don't read them all at once.
 
 - `tools` — how external REST/MCP tools are defined and registered
 - `scopes` — file scopes (global, project, session workspace)
-- `memory` — chat memory + RAG semantics
+- `memory` — chat memory, pins, base settings, RAG semantics, the `memory` dashboard
 - `subtasks` — when to use subtask vs orchestrate
 
-Call `readDoc("<name>")` for any of these.
+Call `readDoc("<name>")` for any of these. Start with `memory` if you need to explain to
+the user what the assistant remembers and how to control it.

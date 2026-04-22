@@ -33,6 +33,13 @@ public class TokenTracker {
         stats.clear();
     }
 
+    public synchronized String summary() {
+        if (stats.isEmpty()) return "no tokens recorded yet";
+        long total = 0, calls = 0;
+        for (Stats s : stats.values()) { total += s.total.get(); calls += s.calls.get(); }
+        return total + " tokens across " + calls + " call(s), " + stats.size() + " source(s)";
+    }
+
     @Command(name = "tokens", group = "Session", description = "Show token usage per source since last reset.")
     public String show() {
         if (stats.isEmpty()) return "(no tokens recorded)";

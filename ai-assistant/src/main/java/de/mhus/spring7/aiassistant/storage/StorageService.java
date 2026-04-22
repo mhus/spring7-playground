@@ -379,6 +379,59 @@ public class StorageService {
         return loadChatMemory().size();
     }
 
+    // ---- pins ----
+
+    public void savePins(List<String> pins) {
+        writeJson(sessionDir().resolve("pins.json"), pins);
+    }
+
+    public List<String> loadPins() {
+        Path f = sessionDir().resolve("pins.json");
+        if (!Files.isRegularFile(f)) return List.of();
+        try {
+            String[] arr = json.readValue(Files.readString(f), String[].class);
+            return new ArrayList<>(List.of(arr));
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
+    // ---- base settings ----
+
+    public void saveBaseSettings(List<String> settings) {
+        writeJson(sessionDir().resolve("base-settings.json"), settings);
+    }
+
+    public List<String> loadBaseSettings() {
+        Path f = sessionDir().resolve("base-settings.json");
+        if (!Files.isRegularFile(f)) return List.of();
+        try {
+            String[] arr = json.readValue(Files.readString(f), String[].class);
+            return new ArrayList<>(List.of(arr));
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
+    // ---- counts for dashboard ----
+
+    public long countWorkspaceFiles() {
+        return countFiles(workspaceDir());
+    }
+
+    public long countProjectFiles() {
+        return countFiles(projectDir());
+    }
+
+    private long countFiles(Path dir) {
+        if (!Files.isDirectory(dir)) return 0;
+        try (Stream<Path> s = Files.walk(dir)) {
+            return s.filter(Files::isRegularFile).count();
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
     public Path workspaceDir() {
         Path d = sessionDir().resolve("workspace");
         try {
