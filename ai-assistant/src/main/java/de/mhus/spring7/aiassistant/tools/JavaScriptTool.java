@@ -1,9 +1,5 @@
 package de.mhus.spring7.aiassistant.tools;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptException;
-
-import org.mozilla.javascript.engine.RhinoScriptEngineFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -11,20 +7,21 @@ import org.springframework.stereotype.Component;
 @Component
 public class JavaScriptTool implements AgentTool {
 
+    private final JsEngine js;
+
+    public JavaScriptTool(JsEngine js) {
+        this.js = js;
+    }
+
     @Tool(description = """
-            Execute JavaScript (Mozilla Rhino) for accurate calculations: math, sorting, filtering,
-            aggregating, string processing, date math etc. Prefer this tool over guessing numerical
-            or algorithmic answers. The return value of the final expression is returned to you.
+            Execute JavaScript for accurate calculations: math, sorting, filtering, aggregating,
+            string processing, date math etc. Prefer this tool over guessing numerical or
+            algorithmic answers. Uses GraalJS when available (GraalVM runtime), Mozilla Rhino
+            as fallback. The return value of the last expression is returned.
             """)
     public String executeJavaScript(
             @ToolParam(description = "JavaScript source. The value of the LAST expression is returned.")
             String code) {
-        ScriptEngine engine = new RhinoScriptEngineFactory().getScriptEngine();
-        try {
-            Object result = engine.eval(code);
-            return String.valueOf(result);
-        } catch (ScriptException e) {
-            return "ERROR: " + e.getMessage();
-        }
+        return js.eval(code);
     }
 }

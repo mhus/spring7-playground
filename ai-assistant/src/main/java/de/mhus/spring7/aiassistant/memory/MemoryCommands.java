@@ -17,6 +17,7 @@ import de.mhus.spring7.aiassistant.plan.SharedRagStore;
 import de.mhus.spring7.aiassistant.storage.StorageService;
 import de.mhus.spring7.aiassistant.storage.TokenTracker;
 import de.mhus.spring7.aiassistant.tools.ExecManager;
+import de.mhus.spring7.aiassistant.tools.JsEngine;
 import de.mhus.spring7.aiassistant.tools.external.ToolService;
 
 @Component
@@ -33,12 +34,13 @@ public class MemoryCommands {
     private final TokenTracker tokens;
     private final ExecManager exec;
     private final ToolService externalTools;
+    private final JsEngine js;
 
     public MemoryCommands(ChatMemory chatMemory, RagCommands assistantRag, SharedRagStore planRag,
                           AssistantPlanCommands planCommands, BaseSettings baseSettings,
                           PinService pins, GlobalMemoryService globalMemory,
                           StorageService storage, TokenTracker tokens,
-                          ExecManager exec, ToolService externalTools) {
+                          ExecManager exec, ToolService externalTools, JsEngine js) {
         this.chatMemory = chatMemory;
         this.assistantRag = assistantRag;
         this.planRag = planRag;
@@ -50,6 +52,7 @@ public class MemoryCommands {
         this.tokens = tokens;
         this.exec = exec;
         this.externalTools = externalTools;
+        this.js = js;
     }
 
     @Command(name = "memory", group = "Memory", description = "Dashboard of all memory layers (chat, RAG, plan, pins, settings, files, exec, tokens).")
@@ -71,6 +74,7 @@ public class MemoryCommands {
         sb.append("project     ").append(storage.countProjectFiles()).append(" file(s)\n");
         sb.append("exec        ").append(exec.list().size()).append(" task(s) (").append(running).append(" running)\n");
         sb.append("ext-tools   ").append(externalTools.size()).append(" tool(s) in registry\n");
+        sb.append("js-engine   ").append(js.mode()).append("\n");
         sb.append("tokens      ").append(tokens.summary()).append("\n");
         return sb.toString();
     }

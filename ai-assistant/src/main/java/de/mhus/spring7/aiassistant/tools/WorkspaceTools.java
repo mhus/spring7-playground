@@ -8,10 +8,6 @@ import java.nio.file.StandardOpenOption;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptException;
-
-import org.mozilla.javascript.engine.RhinoScriptEngineFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -28,9 +24,11 @@ import de.mhus.spring7.aiassistant.storage.StorageService;
 public class WorkspaceTools implements AgentTool {
 
     private final StorageService storage;
+    private final JsEngine js;
 
-    public WorkspaceTools(StorageService storage) {
+    public WorkspaceTools(StorageService storage, JsEngine js) {
         this.storage = storage;
+        this.js = js;
     }
 
     @Tool(description = """
@@ -123,9 +121,9 @@ public class WorkspaceTools implements AgentTool {
     }
 
     @Tool(description = """
-            Read a JavaScript file from the workspace and execute it via Mozilla Rhino.
-            Returns the value of the last expression as a string. Use this to iteratively
-            develop and test scripts that you previously wrote with writeSessionFile.
+            Read a JavaScript file from the workspace and execute it (GraalJS if available,
+            Rhino as fallback). Returns the value of the last expression as a string. Use this
+            to iteratively develop and test scripts that you previously wrote with writeSessionFile.
             """)
     public String executeSessionJavaScript(
             @ToolParam(description = "Relative path to a .js file inside the workspace.") String relativePath) {
@@ -133,13 +131,7 @@ public class WorkspaceTools implements AgentTool {
             Path p = resolve(relativePath);
             if (!Files.isRegularFile(p)) return "ERROR: not a file: " + relativePath;
             String code = Files.readString(p, StandardCharsets.UTF_8);
-            ScriptEngine engine = new RhinoScriptEngineFactory().getScriptEngine();
-            try {
-                Object result = engine.eval(code);
-                return String.valueOf(result);
-            } catch (ScriptException e) {
-                return "ERROR: " + e.getMessage();
-            }
+            return js.eval(code);
         } catch (Exception e) {
             return "ERROR: " + e.getMessage();
         }
