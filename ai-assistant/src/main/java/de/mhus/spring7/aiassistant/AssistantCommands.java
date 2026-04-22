@@ -26,18 +26,22 @@ public class AssistantCommands {
     private final ChatMemory chatMemory;
     private final StorageService storage;
     private final TokenTracker tokens;
+    private final SystemPromptService systemPromptService;
 
     public AssistantCommands(ChatClient chatClient, ChatMemory chatMemory,
-                             StorageService storage, TokenTracker tokens) {
+                             StorageService storage, TokenTracker tokens,
+                             SystemPromptService systemPromptService) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.storage = storage;
         this.tokens = tokens;
+        this.systemPromptService = systemPromptService;
     }
 
     @Command(name = "say", group = "Assistant", description = "Send a message. Uses memory, tools, and imported PDFs.")
     public String say(@Argument(index = 0, description = "Your message.") String message) {
         ChatResponse resp = chatClient.prompt()
+                .system(systemPromptService.get())
                 .user(message)
                 .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, CONVERSATION_ID))
                 .call()
