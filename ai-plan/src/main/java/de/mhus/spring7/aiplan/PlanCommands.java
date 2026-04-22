@@ -15,60 +15,69 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 public class PlanCommands {
 
     private static final String PLANNER_SYSTEM = """
-            You design a linear pipeline of specialist sub-agents that together solve the user's problem.
-            Each agent is a single LLM call with a system prompt.
-            The output of agent N becomes the user input for agent N+1.
-            The first agent receives the original problem statement as its user input.
-            The last agent's output is the final deliverable.
+            You design a pipeline of specialist sub-agents that together solve the user's problem.
 
-            You MUST use the openQuestions field (and return an empty agents list) whenever ANY of these are true:
+            Each pipeline step has a `type`:
+              - "agent":   a single LLM call. Fields: name, systemPrompt.
+              - "forEach": run an item-agent over a list of items. Fields:
+                           producer   (agent whose output is a list, one item per line)
+                           itemAgent  (agent that is called once per item; its user input is the item)
+                           collector  (optional agent that merges all item outputs into the final output)
+
+            Sequencing: output of step N becomes user input of step N+1.
+            The first step receives the original problem statement as user input.
+            The last step's output is the final deliverable.
+
+            Pick forEach ONLY when the problem naturally decomposes into independent sub-tasks
+            (e.g. "write 5 chapters", "generate 10 variations", "translate into 3 languages").
+            Otherwise stick to plain agent steps.
+
+            You MUST use the openQuestions field (and return an empty steps list) whenever ANY of these are true:
             - Target audience is not specified.
             - Output format, medium, or length is not specified.
             - Tone, style, or language is not specified.
-            - Domain/subject is vague ("something nice", "a text", "an article") without a concrete topic.
+            - Domain/subject is vague without a concrete topic.
             - There are ambiguous terms that could reasonably mean different things.
             - You would otherwise have to guess or invent constraints to produce a good plan.
 
-            Only return a populated `agents` list when the problem is concrete enough that two competent
-            humans would plan it the same way. If you feel tempted to "assume reasonable defaults",
-            ask instead.
+            Only return populated `steps` when the problem is concrete enough that two competent
+            humans would plan it the same way. If tempted to "assume reasonable defaults", ask instead.
 
-            Ask 1 to 4 questions at a time. Be specific: each question targets ONE missing piece of
-            information and is answerable in one sentence. Do not ask open-ended or philosophical questions.
+            Ask 1 to 4 questions at a time; each targets ONE missing piece and is answerable in one sentence.
 
-            Planning rules (only when you are returning agents):
-            - 2 to 5 agents. Fewer is usually better.
-            - Each agent has a distinct, focused role.
-            - Each systemPrompt is self-contained and specific: role, expected input, exact output format.
+            Planning rules (when returning steps):
+            - 2 to 5 top-level steps. Fewer is usually better.
+            - Each agent/item prompt is self-contained and specific: role, expected input, exact output format.
               No meta-commentary. Do not mention other agents inside a systemPrompt.
+            - Fields you don't use (e.g. outputSchema, storeInRag, dependsOn, producer/itemAgent/collector
+              for agent steps) may be omitted.
 
-            Examples of when to ask vs plan:
-            - "Write a text about horses" → ASK (length? audience? tone? angle?)
-            - "Write a 300-word neutral introductory article about horses for a children's magazine" → PLAN
-            - "Make me something nice" → ASK (what kind of thing? for whom?)
+            Examples:
+            - "Write a 300-word neutral intro article about horses for adults" →
+              steps: [agent Outliner, agent Writer, agent Lector]
+            - "Write a 5-chapter short fantasy novel, each chapter ~500 words" →
+              steps: [agent Outliner (plot+characters+chapter list), forEach (producer=ChapterLister,
+                      itemAgent=ChapterWriter, collector=FinalAssembler), agent Lector]
             """;
 
     private static final String FORCE_SYSTEM = """
-            You design a linear pipeline of specialist sub-agents. Same output rules as the planner:
-            2-5 agents, self-contained systemPrompts, no meta-commentary.
-
+            You design a pipeline of specialist sub-agents. Same rules and step types as the planner.
             The user has decided NOT to answer further clarifying questions.
-            You MUST return a populated `agents` list and an EMPTY `openQuestions` list.
+            You MUST return a populated `steps` list and an EMPTY `openQuestions` list.
             Make reasonable, explicit assumptions for any missing information and reflect them
-            clearly inside the relevant systemPrompts (e.g. "assume audience: general adults").
-            Do not ask questions. Do not refuse.
+            clearly inside the relevant systemPrompts. Do not ask questions. Do not refuse.
             """;
 
     private static final String REFINE_SYSTEM = """
             You revise an existing agent pipeline based on a user instruction.
             Apply the user's change to the current plan and return the updated plan.
-            Keep agents not affected by the instruction unchanged.
-            Same output rules as the initial planner: 2-5 agents, self-contained systemPrompts.
+            Keep steps not affected by the instruction unchanged.
+            Same output rules and step types as the initial planner.
             If the instruction is ambiguous, return openQuestions instead of guessing.
             """;
 
     private final ChatClient planner;
-    private final ChatClient executor;
+    private final PipelineExecutor pipelineExecutor;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private volatile String currentProblem;
@@ -76,13 +85,13 @@ public class PlanCommands {
     private final List<String> clarifications = new CopyOnWriteArrayList<>();
     private final List<String> baseSettings = new CopyOnWriteArrayList<>();
 
-    public PlanCommands(ChatClient.Builder builder) {
+    public PlanCommands(ChatClient.Builder builder, PipelineExecutor pipelineExecutor) {
         this.planner = builder.build();
-        this.executor = builder.build();
+        this.pipelineExecutor = pipelineExecutor;
     }
 
     @Command(name = "plan", group = "Plan", description = "Design a pipeline of sub-agents for the given problem.")
-    public String plan(@Argument(index = 0, description = "Problem statement, e.g. 'Create a text about horses'.") String problem) {
+    public String plan(@Argument(index = 0, description = "Problem statement.") String problem) {
         this.currentProblem = problem;
         this.clarifications.clear();
         return invokePlanner(PLANNER_SYSTEM, buildInitialUserPrompt());
@@ -103,9 +112,9 @@ public class PlanCommands {
     }
 
     @Command(name = "set", group = "Plan", description = "Add a base setting that applies to all plans (e.g. 'sprache: deutsch').")
-    public String set(@Argument(index = 0, description = "The setting, e.g. 'sprache: deutsch' or 'tonalität: sachlich'.") String setting) {
+    public String set(@Argument(index = 0, description = "The setting.") String setting) {
         baseSettings.add(setting.strip());
-        return "base settings now: " + renderSettings();
+        return "base settings now:" + renderSettings();
     }
 
     @Command(name = "settings", group = "Plan", description = "Show current base settings.")
@@ -129,7 +138,7 @@ public class PlanCommands {
     }
 
     @Command(name = "refine", group = "Plan", description = "Adjust the current plan via a natural-language instruction.")
-    public String refine(@Argument(index = 0, description = "Change instruction, e.g. 'add a fact-checker before the writer'.") String instruction) {
+    public String refine(@Argument(index = 0, description = "Change instruction.") String instruction) {
         if (currentPlan == null) {
             return "no plan — run 'plan <problem>' first";
         }
@@ -157,17 +166,19 @@ public class PlanCommands {
         if (currentPlan == null) {
             return "no plan — run 'plan <problem>' first";
         }
-        if (!currentPlan.hasAgents()) {
-            return "plan has no agents — answer open questions or refine first";
+        if (!currentPlan.hasSteps()) {
+            return "plan has no steps — answer, force or refine first";
         }
-        return execute(currentProblem, currentPlan);
+        ExecutionContext ctx = new ExecutionContext(currentProblem, List.copyOf(baseSettings));
+        pipelineExecutor.execute(currentPlan, ctx);
+        return "═══ finished " + currentPlan.steps().size() + " steps ═══";
     }
 
     @Command(name = "solve", group = "Plan", description = "Plan and execute in one go (skips refine/answer).")
     public String solve(@Argument(index = 0, description = "Problem statement.") String problem) {
         String planOutput = plan(problem);
-        if (currentPlan == null || !currentPlan.hasAgents()) {
-            return planOutput + "\n\n(planner needs clarification — use 'answer' to continue)";
+        if (currentPlan == null || !currentPlan.hasSteps()) {
+            return planOutput + "\n\n(planner needs clarification — use 'answer' or 'force' to continue)";
         }
         String runOutput = run();
         return planOutput + "\n\n" + runOutput;
@@ -189,8 +200,8 @@ public class PlanCommands {
         if (plan.hasQuestions()) {
             return renderQuestions(plan);
         }
-        if (!plan.hasAgents()) {
-            return "planner returned neither agents nor questions";
+        if (!plan.hasSteps()) {
+            return "planner returned neither steps nor questions";
         }
         return renderPlan(plan);
     }
@@ -217,44 +228,24 @@ public class PlanCommands {
         return sb.toString();
     }
 
-    private String renderSettings() {
-        StringBuilder sb = new StringBuilder();
-        int i = 1;
-        for (String s : baseSettings) {
-            sb.append("\n  [").append(i++).append("] ").append(s);
-        }
-        return sb.toString();
-    }
-
-    private String execute(String problem, Plan plan) {
-        String input = problem;
-        String output = null;
-        int total = plan.agents().size();
-        int step = 1;
-        for (AgentSpec agent : plan.agents()) {
-            IO.println("");
-            IO.println("─── step " + step + "/" + total + ": " + agent.name() + " (calling LLM…) ───");
-            long t0 = System.currentTimeMillis();
-            output = executor.prompt()
-                    .system(agent.systemPrompt())
-                    .user(input)
-                    .call()
-                    .content();
-            long ms = System.currentTimeMillis() - t0;
-            IO.println("[" + agent.name() + " done in " + ms + " ms]");
-            IO.println(output);
-            input = output;
-            step++;
-        }
-        return "═══ finished " + total + " agents ═══";
-    }
-
     private String renderPlan(Plan plan) {
-        StringBuilder sb = new StringBuilder("plan (").append(plan.agents().size()).append(" agents):\n");
+        StringBuilder sb = new StringBuilder("plan (").append(plan.steps().size()).append(" steps):\n");
         int i = 1;
-        for (AgentSpec a : plan.agents()) {
-            sb.append("  [").append(i++).append("] ").append(a.name()).append("\n")
-              .append("      ").append(preview(a.systemPrompt())).append("\n");
+        for (PipelineStep s : plan.steps()) {
+            sb.append("  [").append(i++).append("] ").append(s.type()).append(" · ").append(s.name()).append("\n");
+            if (s.isAgent()) {
+                sb.append("      ").append(preview(s.systemPrompt())).append("\n");
+            } else if (s.isForEach()) {
+                if (s.producer() != null)
+                    sb.append("      producer ▸ ").append(s.producer().name()).append(": ")
+                      .append(preview(s.producer().systemPrompt())).append("\n");
+                if (s.itemAgent() != null)
+                    sb.append("      item     ▸ ").append(s.itemAgent().name()).append(": ")
+                      .append(preview(s.itemAgent().systemPrompt())).append("\n");
+                if (s.collector() != null)
+                    sb.append("      collect  ▸ ").append(s.collector().name()).append(": ")
+                      .append(preview(s.collector().systemPrompt())).append("\n");
+            }
         }
         return sb.toString();
     }
@@ -265,12 +256,22 @@ public class PlanCommands {
         for (String q : plan.openQuestions()) {
             sb.append("  (").append(i++).append(") ").append(q).append("\n");
         }
-        sb.append("\nuse: answer \"<your answers>\"");
+        sb.append("\nuse: answer \"<your answers>\"  or  force");
+        return sb.toString();
+    }
+
+    private String renderSettings() {
+        StringBuilder sb = new StringBuilder();
+        int i = 1;
+        for (String s : baseSettings) {
+            sb.append("\n  [").append(i++).append("] ").append(s);
+        }
         return sb.toString();
     }
 
     private static String preview(String text) {
+        if (text == null) return "";
         String oneLine = text.replaceAll("\\s+", " ").strip();
-        return oneLine.length() > 180 ? oneLine.substring(0, 180) + "…" : oneLine;
+        return oneLine.length() > 160 ? oneLine.substring(0, 160) + "…" : oneLine;
     }
 }
