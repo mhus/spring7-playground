@@ -13,6 +13,8 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,6 +51,7 @@ public class SubtaskTool {
     private final ToolCallingManager toolCallingManager;
     private final BaseSettings baseSettings;
     private final TokenTracker tokens;
+    private final ToolCallback[] toolCallbacks;
     private final int maxIterations;
 
     public SubtaskTool(ChatClient.Builder builder,
@@ -68,9 +71,10 @@ public class SubtaskTool {
         tools.add(assistantTools);
         tools.addAll(agentTools);
         tools.add(orchestrateTool);
+        this.toolCallbacks = ToolCallbacks.from(tools.toArray());
         // no default advisors → fresh context, no memory, no RAG injection
         this.subChat = builder
-                .defaultTools(tools.toArray())
+                .defaultToolCallbacks(toolCallbacks)
                 .defaultOptions(ToolCallingChatOptions.builder()
                         .internalToolExecutionEnabled(false)
                         .build())
@@ -98,7 +102,8 @@ public class SubtaskTool {
         conversation.add(new UserMessage(task));
 
         for (int i = 0; i < maxIterations; i++) {
-            ChatResponse resp = subChat.prompt(new Prompt(conversation))
+            ChatResponse resp = subChat.prompt()
+                    .messages(conversation)
                     .call()
                     .chatResponse();
             tokens.record("subtask", resp.getMetadata().getUsage());
@@ -108,8 +113,12 @@ public class SubtaskTool {
                 return ai.getText();
             }
 
-            ToolExecutionResult result = toolCallingManager.executeToolCalls(
-                    new Prompt(conversation), resp);
+            Prompt execPrompt = new Prompt(conversation,
+                    ToolCallingChatOptions.builder()
+                            .toolCallbacks(toolCallbacks)
+                            .internalToolExecutionEnabled(false)
+                            .build());
+            ToolExecutionResult result = toolCallingManager.executeToolCalls(execPrompt, resp);
             conversation = new ArrayList<>(result.conversationHistory());
         }
         return "subtask aborted: max-iterations (" + maxIterations + ") reached. "
